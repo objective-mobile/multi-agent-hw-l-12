@@ -2,9 +2,14 @@
 REPL with HITL interrupt/resume loop for the multi-agent research system.
 Langfuse tracing is attached per-run via CallbackHandler.
 """
+import os
 import uuid
-from langgraph.types import Command
 
+# Ensure Langfuse env vars are set before any langfuse import
+from dotenv import load_dotenv
+load_dotenv(override=True)
+
+from langgraph.types import Command
 from supervisor import build_supervisor, get_langfuse_handler
 
 SESSION_ID = str(uuid.uuid4())

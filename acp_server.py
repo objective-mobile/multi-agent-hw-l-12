@@ -8,6 +8,63 @@ import uvicorn.config as _uvc
 if not hasattr(_uvc, "LoopSetupType"):
     _uvc.LoopSetupType = getattr(_uvc, "LoopFactoryType", str)
 
+# Compatibility patch: acp-sdk calls uvicorn.Config with positional args based on an
+# older signature. New uvicorn added params that shift ssl_* into wrong positions.
+# Fix: always call uvicorn.Config with keyword args only.
+import uvicorn as _uvicorn
+import inspect as _inspect
+_OrigConfig = _uvicorn.Config
+_orig_params = list(_inspect.signature(_OrigConfig.__init__).parameters.keys())[1:]  # skip 'self'
+
+class _PatchedConfig(_OrigConfig):
+    def __new__(cls, app, *args, **kwargs):
+        # Convert positional args to kwargs using the NEW uvicorn signature
+        # acp-sdk passes args positionally based on OLD signature — we re-map them
+        # by name using the OLD param order from acp-sdk source
+        _old_order = [
+            "host","port","uds","fd","loop","http","ws","ws_max_size","ws_max_queue",
+            "ws_ping_interval","ws_ping_timeout","ws_per_message_deflate","lifespan",
+            "env_file","log_config","log_level","access_log","use_colors","interface",
+            "reload","reload_dirs","reload_delay","reload_includes","reload_excludes",
+            "workers","proxy_headers","server_header","date_header","forwarded_allow_ips",
+            "root_path","limit_concurrency","limit_max_requests","backlog",
+            "timeout_keep_alive","timeout_notify","timeout_graceful_shutdown",
+            "callback_notify","ssl_keyfile","ssl_certfile","ssl_keyfile_password",
+            "ssl_version","ssl_cert_reqs","ssl_ca_certs","ssl_ciphers",
+            "headers","factory","h11_max_incomplete_event_size",
+        ]
+        named = dict(zip(_old_order, args))
+        named.update(kwargs)
+        # Drop ssl args if no cert is configured
+        if not named.get("ssl_certfile") and not named.get("ssl_keyfile"):
+            named.pop("ssl_version", None)
+            named.pop("ssl_cert_reqs", None)
+            named.pop("ssl_ciphers", None)
+        return _OrigConfig.__new__(cls)
+
+    def __init__(self, app, *args, **kwargs):
+        _old_order = [
+            "host","port","uds","fd","loop","http","ws","ws_max_size","ws_max_queue",
+            "ws_ping_interval","ws_ping_timeout","ws_per_message_deflate","lifespan",
+            "env_file","log_config","log_level","access_log","use_colors","interface",
+            "reload","reload_dirs","reload_delay","reload_includes","reload_excludes",
+            "workers","proxy_headers","server_header","date_header","forwarded_allow_ips",
+            "root_path","limit_concurrency","limit_max_requests","backlog",
+            "timeout_keep_alive","timeout_notify","timeout_graceful_shutdown",
+            "callback_notify","ssl_keyfile","ssl_certfile","ssl_keyfile_password",
+            "ssl_version","ssl_cert_reqs","ssl_ca_certs","ssl_ciphers",
+            "headers","factory","h11_max_incomplete_event_size",
+        ]
+        named = dict(zip(_old_order, args))
+        named.update(kwargs)
+        if not named.get("ssl_certfile") and not named.get("ssl_keyfile"):
+            named.pop("ssl_version", None)
+            named.pop("ssl_cert_reqs", None)
+            named.pop("ssl_ciphers", None)
+        super().__init__(app, **named)
+
+_uvicorn.Config = _PatchedConfig
+
 import json
 import re
 import asyncio

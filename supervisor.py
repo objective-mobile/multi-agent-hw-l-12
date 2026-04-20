@@ -1,7 +1,6 @@
 """
-Supervisor agent — local orchestrator with Langfuse tracing.
+Supervisor agent — local orchestrator with Langfuse tracing (langfuse v4).
 """
-import asyncio
 import json
 import uuid
 
@@ -10,17 +9,15 @@ from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import interrupt
+import asyncio
 
-from acp_sdk.client import Client as ACPClient
-from acp_sdk.models import Message, MessagePart
 from fastmcp import Client as MCPClient
 
 from langfuse import Langfuse
-from langfuse.callback import CallbackHandler
+from langfuse.langchain import CallbackHandler
 
 from config import settings, SUPERVISOR_PROMPT
 
-ACP_BASE_URL = f"http://localhost:{settings.acp_port}"
 REPORT_MCP_URL = f"http://localhost:{settings.report_mcp_port}/mcp"
 
 _langfuse = Langfuse(
@@ -31,15 +28,26 @@ _langfuse = Langfuse(
 
 
 def get_langfuse_handler(session_id: str, user_id: str = "default-user", trace_name: str = "mas-run"):
-    return CallbackHandler(
-        secret_key=settings.langfuse_secret_key.get_secret_value(),
-        public_key=settings.langfuse_public_key,
-        host=settings.langfuse_base_url,
-        session_id=session_id,
-        user_id=user_id,
-        trace_name=trace_name,
-        tags=["multi-agent", "research"],
+    """
+    Langfuse v4: CallbackHandler only accepts public_key.
+    Session/user metadata is attached by starting a parent observation first.
+    """
+    trace_id = str(uuid.uuid4())
+
+    # Create a parent trace with session/user metadata
+    _langfuse.create_event(
+        name=trace_name,
+        metadata={
+            "session_id": session_id,
+            "user_id": user_id,
+            "tags": ["multi-agent", "research"],
+        },
     )
+
+    handler = CallbackHandler(
+        public_key=settings.langfuse_public_key,
+    )
+    return handler
 
 
 def _run_async(coro):
@@ -54,41 +62,46 @@ def _run_async(coro):
         return asyncio.run(coro)
 
 
-async def _acp_call(agent_name: str, message: str) -> str:
-    async with ACPClient(base_url=ACP_BASE_URL) as client:
-        run = await client.run_sync(
-            agent=agent_name,
-            input=[Message(role="user", parts=[MessagePart(content=message)])],
-        )
-        parts = run.output[-1].parts if run.output else []
-        return parts[0].content if parts else ""
-
-
 @tool
 def plan(request: str) -> str:
-    """Decompose the user research request into a structured ResearchPlan via ACP → Planner."""
-    print(f"\n[Supervisor → ACP → Planner]")
-    result = _run_async(_acp_call("planner", request))
-    print(f"  {result[:120]}")
-    return result
+    """Decompose the user research request into a structured ResearchPlan via Planner agent."""
+    print(f"\n[Supervisor → Planner]")
+    from agents.planner import run_planner
+    result = run_planner(request)
+    output = (
+        f"Goal: {result.goal}\n"
+        f"Search queries: {result.search_queries}\n"
+        f"Sources to check: {result.sources_to_check}\n"
+        f"Output format: {result.output_format}"
+    )
+    print(f"  {output[:120]}")
+    return output
 
 
 @tool
 def research(request: str) -> str:
-    """Execute research following a plan via ACP → Researcher. Returns detailed findings."""
-    print(f"\n[Supervisor → ACP → Researcher]")
-    result = _run_async(_acp_call("researcher", request))
+    """Execute research following a plan via Researcher agent. Returns detailed findings."""
+    print(f"\n[Supervisor → Researcher]")
+    from agents.research import run_researcher
+    result = run_researcher(request)
     print(f"  Research complete ({len(result)} chars)")
     return result
 
 
 @tool
 def critique(findings: str) -> str:
-    """Critically evaluate research findings via ACP → Critic. Returns APPROVE or REVISE."""
-    print(f"\n[Supervisor → ACP → Critic]")
-    result = _run_async(_acp_call("critic", findings))
-    print(f"  {result[:120]}")
-    return result
+    """Critically evaluate research findings via Critic agent. Returns APPROVE or REVISE."""
+    print(f"\n[Supervisor → Critic]")
+    from agents.critic import run_critic
+    result = run_critic(findings)
+    output = (
+        f"Verdict: {result.verdict}\n"
+        f"Strengths: {result.strengths}\n"
+        f"Gaps: {result.gaps}\n"
+        f"Revision requests: {result.revision_requests}"
+    )
+    print(f"  {output[:120]}")
+    return output
 
 
 @tool
